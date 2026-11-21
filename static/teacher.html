@@ -3,6 +3,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Teacher Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <style>
   body { font-family: sans-serif; padding: 1.5rem; max-width: 900px; margin: auto; }
   .big { font-size: 4rem; font-weight: bold; }
@@ -12,12 +13,19 @@
 </style></head>
 <body>
   <div id="alert"></div>
+  <div style="float:right; text-align:center">
+    <div id="qr"></div>
+    <small>Scan to join</small><br>
+    <small id="joinurl"></small>
+  </div>
+
   <h2>Topic: <span id="topic"></span></h2>
   <div class="big"><span id="percent">0</span>% confused</div>
   <p><span id="confused">0</span> of <span id="students">0</span> students</p>
 
   <input id="newtopic" placeholder="Next topic">
   <button onclick="setTopic()">Switch topic</button>
+  <a href="/summary" target="_blank">Open summary</a>
 
   <h3>Confusion timeline</h3>
   <canvas id="chart" height="120"></canvas>
@@ -27,6 +35,11 @@
 
 <script>
   const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/teacher");
+
+  fetch("/api/info").then(r => r.json()).then(i => {
+    new QRCode(document.getElementById("qr"), {text: i.join_url, width: 140, height: 140});
+    document.getElementById("joinurl").innerText = i.join_url;
+  });
 
   const chart = new Chart(document.getElementById("chart"), {
     type: "line",

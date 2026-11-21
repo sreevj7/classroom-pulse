@@ -1,4 +1,5 @@
 import asyncio
+import socket
 import time
 import uuid
 from collections import deque
@@ -25,9 +26,7 @@ class Session:
         self.history = []          # timeline points
         self.spikes = []           # detected spike moments
         self.last_spike_time = 0
-        self.spikes = []           # detected spike moments
-        self.last_spike_time = 0
-        self.tap_counts = {}       # NEW: total taps per topic
+        self.tap_counts = {}       # total taps per topic
 
     def active_taps(self):
         cutoff = time.time() - DECAY_SECONDS
@@ -74,7 +73,8 @@ async def broadcast_to_teachers():
         try:
             await t.send_json(data)
         except Exception:
-            session.teachers.remove(t)
+            if t in session.teachers:
+                session.teachers.remove(t)
 
 
 async def ticker():
@@ -99,6 +99,17 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
+def lan_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
 @app.get("/")
 def home():
     return FileResponse("static/student.html")
@@ -108,9 +119,15 @@ def home():
 def teacher_page():
     return FileResponse("static/teacher.html")
 
+
 @app.get("/summary")
 def summary_page():
     return FileResponse("static/summary.html")
+
+
+@app.get("/api/info")
+def info():
+    return {"join_url": "http://" + lan_ip() + ":8000/"}
 
 
 @app.get("/api/summary")
@@ -142,6 +159,8 @@ def summary_data():
 
     result.sort(key=lambda r: r["score"], reverse=True)
     return result
+
+
 @app.websocket("/ws/student")
 async def student_ws(ws: WebSocket):
     await ws.accept()
@@ -158,6 +177,7 @@ async def student_ws(ws: WebSocket):
                     session.tap_counts[session.topic] = session.tap_counts.get(session.topic, 0) + 1
     except WebSocketDisconnect:
         session.students.pop(sid, None)
+
 
 @app.websocket("/ws/teacher")
 async def teacher_ws(ws: WebSocket):
