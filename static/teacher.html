@@ -1,21 +1,82 @@
 <!DOCTYPE html>
-<html><head><title>Teacher Dashboard</title>
-<style>body{font-family:sans-serif;padding:2rem} .big{font-size:4rem}</style></head>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teacher Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  body { font-family: sans-serif; padding: 1.5rem; max-width: 900px; margin: auto; }
+  .big { font-size: 4rem; font-weight: bold; }
+  #alert { display: none; background: #e74c3c; color: white; padding: 1rem;
+           border-radius: 8px; font-size: 1.2rem; margin-bottom: 1rem; }
+  li { margin: 0.3rem 0; }
+</style></head>
 <body>
+  <div id="alert"></div>
   <h2>Topic: <span id="topic"></span></h2>
   <div class="big"><span id="percent">0</span>% confused</div>
   <p><span id="confused">0</span> of <span id="students">0</span> students</p>
+
   <input id="newtopic" placeholder="Next topic">
   <button onclick="setTopic()">Switch topic</button>
+
+  <h3>Confusion timeline</h3>
+  <canvas id="chart" height="120"></canvas>
+
+  <h3>Spike moments</h3>
+  <ul id="spikelist"><li>None yet</li></ul>
+
 <script>
   const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/teacher");
+
+  const chart = new Chart(document.getElementById("chart"), {
+    type: "line",
+    data: { labels: [], datasets: [{
+      label: "Confusion %", data: [], borderColor: "#e74c3c",
+      tension: 0.3, pointRadius: 2,
+      pointBackgroundColor: [], pointBorderColor: []
+    }]},
+    options: { animation: false, scales: { y: { min: 0, max: 100 } } }
+  });
+
+  const clock = (t) => new Date(t * 1000).toLocaleTimeString();
+
   ws.onmessage = (e) => {
     const d = JSON.parse(e.data);
-    if (d.type === "state") {
-      percent.innerText = d.percent; confused.innerText = d.confused;
-      students.innerText = d.students; topic.innerText = d.topic;
+    if (d.type !== "state") return;
+
+    percent.innerText = d.percent;
+    confused.innerText = d.confused;
+    students.innerText = d.students;
+    topic.innerText = d.topic;
+
+    // timeline, with spike points drawn big and dark red
+    const spikeTimes = new Set(d.spikes.map(s => s.t));
+    chart.data.labels = d.history.map(h => clock(h.t));
+    chart.data.datasets[0].data = d.history.map(h => h.percent);
+    chart.data.datasets[0].pointBackgroundColor =
+      d.history.map(h => spikeTimes.has(h.t) ? "#7b0000" : "#e74c3c");
+    chart.data.datasets[0].pointRadius =
+      d.history.map(h => spikeTimes.has(h.t) ? 8 : 2);
+    chart.update("none");
+
+    // spike list
+    const list = document.getElementById("spikelist");
+    list.innerHTML = d.spikes.length
+      ? d.spikes.slice().reverse().map(s =>
+          `<li>${clock(s.t)}: ${s.percent}% confused during "${s.topic}"</li>`).join("")
+      : "<li>None yet</li>";
+
+    // banner if a spike happened in the last 20 seconds
+    const box = document.getElementById("alert");
+    const last = d.spikes[d.spikes.length - 1];
+    if (last && Date.now() / 1000 - last.t < 20) {
+      box.style.display = "block";
+      box.innerText = "Confusion spike: " + last.percent + "% of the class just got lost on \"" + last.topic + "\"";
+    } else {
+      box.style.display = "none";
     }
   };
+
   function setTopic() {
     ws.send(JSON.stringify({type: "set_topic", topic: newtopic.value}));
   }

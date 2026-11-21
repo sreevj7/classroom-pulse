@@ -1,23 +1,30 @@
+import asyncio
 import time
 import uuid
 from collections import deque
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
+DECAY_SECONDS = 60        # a tap counts for 60s, then fades out
+COOLDOWN = 5              # one tap per student every 5s (anti-spam)
+SAMPLE_EVERY = 2          # record the class state every 2 seconds
+SPIKE_MIN_PERCENT = 20    # a spike must be at least this confused
+SPIKE_JUMP = 15           # ...and this far above the recent average
+SPIKE_GAP = 30            # at least 30s between two spikes
 
-DECAY_SECONDS = 60      # a tap counts for 60s, then fades out
-COOLDOWN = 5            # one tap per student every 5s (anti-spam)
 
 class Session:
     def __init__(self):
         self.students = {}
         self.teachers = []
-        self.taps = deque()          # (timestamp, student_id, topic)
+        self.taps = deque()        # (timestamp, student_id, topic)
         self.last_tap = {}
         self.topic = "Introduction"
+        self.history = []          # timeline points
+        self.spikes = []           # detected spike moments
+        self.last_spike_time = 0
 
     def active_taps(self):
         cutoff = time.time() - DECAY_SECONDS
@@ -25,18 +32,38 @@ class Session:
             self.taps.popleft()
         return len(self.taps)
 
-    def state(self):
+    def percent(self):
         n = len(self.students)
         c = self.active_taps()
+        return round(100 * c / n, 1) if n else 0
+
+    def sample(self):
+        """Called every few seconds: record a point and look for a spike."""
+        now = time.time()
+        p = self.percent()
+        recent = [h["percent"] for h in self.history[-10:]]
+        baseline = sum(recent) / len(recent) if recent else 0
+        self.history.append({"t": now, "percent": p, "topic": self.topic})
+        if (p >= SPIKE_MIN_PERCENT
+                and p - baseline >= SPIKE_JUMP
+                and now - self.last_spike_time >= SPIKE_GAP):
+            self.spikes.append({"t": now, "percent": p, "topic": self.topic})
+            self.last_spike_time = now
+
+    def state(self):
         return {
             "type": "state",
-            "students": n,
-            "confused": c,
-            "percent": round(100 * c / n, 1) if n else 0,
+            "students": len(self.students),
+            "confused": self.active_taps(),
+            "percent": self.percent(),
             "topic": self.topic,
+            "history": self.history[-150:],
+            "spikes": self.spikes,
         }
 
+
 session = Session()
+
 
 async def broadcast_to_teachers():
     data = session.state()
@@ -46,20 +73,44 @@ async def broadcast_to_teachers():
         except Exception:
             session.teachers.remove(t)
 
+
+async def ticker():
+    """Runs forever in the background, once per second."""
+    count = 0
+    while True:
+        await asyncio.sleep(1)
+        count += 1
+        if count % SAMPLE_EVERY == 0:
+            session.sample()
+        await broadcast_to_teachers()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(ticker())
+    yield
+    task.cancel()
+
+
+app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
 @app.get("/")
 def home():
     return FileResponse("static/student.html")
+
 
 @app.get("/teacher")
 def teacher_page():
     return FileResponse("static/teacher.html")
 
+
 @app.websocket("/ws/student")
 async def student_ws(ws: WebSocket):
     await ws.accept()
-    sid = str(uuid.uuid4())           # anonymous random token, no names
+    sid = str(uuid.uuid4())        # anonymous random token, no names
     session.students[sid] = ws
-    await broadcast_to_teachers()
     try:
         while True:
             msg = await ws.receive_json()
@@ -68,10 +119,9 @@ async def student_ws(ws: WebSocket):
                 if now - session.last_tap.get(sid, 0) >= COOLDOWN:
                     session.last_tap[sid] = now
                     session.taps.append((now, sid, session.topic))
-                    await broadcast_to_teachers()
     except WebSocketDisconnect:
         session.students.pop(sid, None)
-        await broadcast_to_teachers()
+
 
 @app.websocket("/ws/teacher")
 async def teacher_ws(ws: WebSocket):
@@ -83,7 +133,6 @@ async def teacher_ws(ws: WebSocket):
             msg = await ws.receive_json()
             if msg.get("type") == "set_topic":
                 session.topic = msg["topic"]
-                await broadcast_to_teachers()
     except WebSocketDisconnect:
         if ws in session.teachers:
             session.teachers.remove(ws)
