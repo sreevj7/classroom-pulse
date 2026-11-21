@@ -2,65 +2,88 @@ import asyncio
 import socket
 import time
 import uuid
-from collections import deque
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-DECAY_SECONDS = 60        # a tap counts for 60s, then fades out
-COOLDOWN = 5              # one tap per student every 5s (anti-spam)
-SAMPLE_EVERY = 2          # record the class state every 2 seconds
-SPIKE_MIN_PERCENT = 20    # a spike must be at least this confused
-SPIKE_JUMP = 15           # ...and this far above the recent average
-SPIKE_GAP = 30            # at least 30s between two spikes
+SAMPLE_EVERY = 2         # record a chart point every 2 seconds
+SPIKE_WINDOW = 30        # seconds
+SPIKE_MIN_TAPS = 3       # at least this many taps in the window...
+SPIKE_PERCENT = 20       # ...or this % of the class, whichever is bigger
+SPIKE_GAP = 30           # at least 30s between two spikes
 
 
 class Session:
     def __init__(self):
-        self.students = {}
         self.teachers = []
-        self.taps = deque()        # (timestamp, student_id, topic)
-        self.last_tap = {}
+        self.students = {}      # sid -> {"num", "name", "online", "ws"}
+        self.counter = 0
+        self.reset_data()
+
+    def reset_data(self):
         self.topic = "Introduction"
-        self.history = []          # timeline points
-        self.spikes = []           # detected spike moments
+        self.topic_taps = {"Introduction": {}}    # topic -> {sid: time}
+        self.history = {"Introduction": []}       # topic -> chart points
+        self.spikes = []
         self.last_spike_time = 0
-        self.tap_counts = {}       # total taps per topic
+        self.log = []
 
-    def active_taps(self):
-        cutoff = time.time() - DECAY_SECONDS
-        while self.taps and self.taps[0][0] < cutoff:
-            self.taps.popleft()
-        return len(self.taps)
+    def who(self, sid):
+        st = self.students[sid]
+        return st["name"] or "Anonymous #" + str(st["num"])
 
-    def percent(self):
-        n = len(self.students)
-        c = self.active_taps()
-        return round(100 * c / n, 1) if n else 0
+    def percent_for(self, topic):
+        joined = len(self.students)
+        lost = len(self.topic_taps.get(topic, {}))
+        return round(100 * lost / joined, 1) if joined else 0
 
     def sample(self):
-        """Called every few seconds: record a point and look for a spike."""
+        """Every few seconds: add a chart point for the current topic and look for a spike."""
         now = time.time()
-        p = self.percent()
-        recent = [h["percent"] for h in self.history[-10:]]
-        baseline = sum(recent) / len(recent) if recent else 0
-        self.history.append({"t": now, "percent": p, "topic": self.topic})
-        if (p >= SPIKE_MIN_PERCENT
-                and p - baseline >= SPIKE_JUMP
-                and now - self.last_spike_time >= SPIKE_GAP):
-            self.spikes.append({"t": now, "percent": p, "topic": self.topic})
+        taps = self.topic_taps.setdefault(self.topic, {})
+        joined = len(self.students)
+        pct = self.percent_for(self.topic)
+        self.history.setdefault(self.topic, []).append({"t": now, "percent": pct})
+        recent = sum(1 for t in taps.values() if now - t <= SPIKE_WINDOW)
+        need = max(SPIKE_MIN_TAPS, round(joined * SPIKE_PERCENT / 100))
+        if recent >= need and now - self.last_spike_time >= SPIKE_GAP:
+            self.spikes.append({"t": now, "topic": self.topic,
+                                "count": recent, "percent": pct})
             self.last_spike_time = now
 
+    def topic_rows(self):
+        rows = []
+        for name, taps in self.topic_taps.items():
+            pct = self.percent_for(name)
+            spikes = sum(1 for s in self.spikes if s["topic"] == name)
+            score = pct + 10 * spikes
+            if score >= 40:
+                advice = "Revisit this topic"
+            elif score >= 15:
+                advice = "Quick recap needed"
+            else:
+                advice = "Understood well"
+            shown = [self.students[sid]["name"] for sid in taps
+                     if self.students[sid]["name"]]
+            rows.append({"topic": name, "lost": len(taps),
+                         "joined": len(self.students), "percent": pct,
+                         "spikes": spikes, "score": score, "advice": advice,
+                         "names": shown, "anonymous": len(taps) - len(shown)})
+        return rows
+
     def state(self):
+        taps = self.topic_taps.get(self.topic, {})
         return {
             "type": "state",
-            "students": len(self.students),
-            "confused": self.active_taps(),
-            "percent": self.percent(),
             "topic": self.topic,
-            "history": self.history[-150:],
-            "spikes": self.spikes,
+            "joined": len(self.students),
+            "online": sum(1 for s in self.students.values() if s["online"]),
+            "lost": len(taps),
+            "percent": self.percent_for(self.topic),
+            "history": self.history.get(self.topic, [])[-300:],
+            "spikes": self.spikes[-20:],
+            "log": self.log[-12:],
         }
 
 
@@ -77,8 +100,26 @@ async def broadcast_to_teachers():
                 session.teachers.remove(t)
 
 
+async def send_student_state(sid):
+    st = session.students.get(sid)
+    if not st or not st.get("ws"):
+        return
+    try:
+        await st["ws"].send_json({
+            "type": "you",
+            "topic": session.topic,
+            "tapped": sid in session.topic_taps.get(session.topic, {}),
+        })
+    except Exception:
+        pass
+
+
+async def notify_all_students():
+    for sid in list(session.students):
+        await send_student_state(sid)
+
+
 async def ticker():
-    """Runs forever in the background, once per second."""
     count = 0
     while True:
         await asyncio.sleep(1)
@@ -99,15 +140,26 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
-def lan_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+def lan_ips():
+    ips = []
     try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("10.255.255.255", 1))
-        return s.getsockname()[0]
-    except Exception:
-        return "127.0.0.1"
-    finally:
+        ips.append(s.getsockname()[0])
         s.close()
+    except Exception:
+        pass
+    try:
+        for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.append(item[4][0])
+    except Exception:
+        pass
+    out = []
+    for ip in ips:
+        if ip.startswith("127.") or ip.startswith("169.254.") or ip in out:
+            continue
+        out.append(ip)
+    return out or ["127.0.0.1"]
 
 
 @app.get("/")
@@ -126,57 +178,52 @@ def summary_page():
 
 
 @app.get("/api/info")
-def info():
-    return {"join_url": "http://" + lan_ip() + ":8000/"}
+def info(request: Request):
+    port = request.url.port or 8000
+    return {"urls": ["http://" + ip + ":" + str(port) + "/" for ip in lan_ips()]}
 
 
 @app.get("/api/summary")
 def summary_data():
-    topics = {}
-    for h in session.history:
-        t = topics.setdefault(h["topic"], {"topic": h["topic"], "samples": []})
-        t["samples"].append(h["percent"])
-
-    result = []
-    for name, t in topics.items():
-        samples = t["samples"]
-        avg = round(sum(samples) / len(samples), 1)
-        peak = max(samples)
-        spikes = sum(1 for s in session.spikes if s["topic"] == name)
-        taps = session.tap_counts.get(name, 0)
-        score = round(avg + 0.5 * peak + 10 * spikes, 1)
-        if score >= 60:
-            advice = "Revisit this topic"
-        elif score >= 25:
-            advice = "Quick recap needed"
-        else:
-            advice = "Understood well"
-        result.append({
-            "topic": name, "avg": avg, "peak": peak,
-            "spikes": spikes, "taps": taps,
-            "score": score, "advice": advice,
-        })
-
-    result.sort(key=lambda r: r["score"], reverse=True)
-    return result
+    rows = session.topic_rows()
+    rows.sort(key=lambda r: r["score"], reverse=True)
+    return rows
 
 
 @app.websocket("/ws/student")
 async def student_ws(ws: WebSocket):
     await ws.accept()
-    sid = str(uuid.uuid4())        # anonymous random token, no names
-    session.students[sid] = ws
+    q = ws.query_params
+    sid = (q.get("sid") or str(uuid.uuid4()))[:64]
+    name = q.get("name", "").strip()[:30] if q.get("show") == "1" else ""
+    st = session.students.get(sid)
+    if st is None:
+        session.counter += 1
+        st = {"num": session.counter}
+        session.students[sid] = st
+    st["name"] = name
+    st["ws"] = ws
+    st["online"] = True
+    await send_student_state(sid)
     try:
         while True:
             msg = await ws.receive_json()
             if msg.get("type") == "confused":
-                now = time.time()
-                if now - session.last_tap.get(sid, 0) >= COOLDOWN:
-                    session.last_tap[sid] = now
-                    session.taps.append((now, sid, session.topic))
-                    session.tap_counts[session.topic] = session.tap_counts.get(session.topic, 0) + 1
+                taps = session.topic_taps.setdefault(session.topic, {})
+                if sid not in taps:          # one tap per student per topic
+                    now = time.time()
+                    taps[sid] = now
+                    session.log.append({"t": now, "who": session.who(sid),
+                                        "topic": session.topic})
+                    await broadcast_to_teachers()
+                await send_student_state(sid)
     except WebSocketDisconnect:
-        session.students.pop(sid, None)
+        pass
+    finally:
+        # the answer stays recorded and the student stays counted
+        if st.get("ws") is ws:
+            st["online"] = False
+            st["ws"] = None
 
 
 @app.websocket("/ws/teacher")
@@ -187,8 +234,19 @@ async def teacher_ws(ws: WebSocket):
     try:
         while True:
             msg = await ws.receive_json()
-            if msg.get("type") == "set_topic":
-                session.topic = msg["topic"]
+            kind = msg.get("type")
+            if kind == "set_topic":
+                topic = str(msg.get("topic", "")).strip()[:60]
+                if topic:
+                    session.topic = topic          # new topic = fresh chart from 0
+                    session.topic_taps.setdefault(topic, {})
+                    session.history.setdefault(topic, [])
+                    await notify_all_students()
+                    await broadcast_to_teachers()
+            elif kind == "reset":
+                session.reset_data()
+                await notify_all_students()
+                await broadcast_to_teachers()
     except WebSocketDisconnect:
         if ws in session.teachers:
             session.teachers.remove(ws)

@@ -3,7 +3,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Class Summary</title>
 <style>
-  body { font-family: sans-serif; padding: 1.5rem; max-width: 900px; margin: auto; }
+  body { font-family: sans-serif; padding: 1.5rem; max-width: 1000px; margin: auto; }
   table { border-collapse: collapse; width: 100%; }
   th, td { padding: 0.7rem; border-bottom: 1px solid #ddd; text-align: left; }
   .Revisit { color: #c0392b; font-weight: bold; }
@@ -15,18 +15,22 @@
   <p>Topics ranked by how much they need revisiting. <a href="/teacher">Back to dashboard</a></p>
   <table>
     <thead><tr>
-      <th>Topic</th><th>Avg confusion</th><th>Peak</th>
-      <th>Spikes</th><th>Taps</th><th>Advice</th>
+      <th>Topic</th><th>Students lost</th><th>Of class</th>
+      <th>Spikes</th><th>Who (shared names)</th><th>Advice</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
 <script>
+  const esc = (s) => String(s).replace(/[&<>"]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   fetch("/api/summary").then(r => r.json()).then(data => {
     document.getElementById("rows").innerHTML = data.map(r => {
       const cls = r.advice.split(" ")[0];
-      return `<tr><td>${r.topic}</td><td>${r.avg}%</td><td>${r.peak}%</td>
-              <td>${r.spikes}</td><td>${r.taps}</td>
-              <td class="${cls}">${r.advice}</td></tr>`;
+      let who = r.names.map(esc).join(", ");
+      if (r.anonymous) who += (who ? " + " : "") + r.anonymous + " anonymous";
+      return `<tr><td>${esc(r.topic)}</td><td>${r.lost} / ${r.joined}</td>
+              <td>${r.percent}%</td><td>${r.spikes}</td>
+              <td>${who || "-"}</td><td class="${cls}">${r.advice}</td></tr>`;
     }).join("");
   });
 </script></body></html>

@@ -3,16 +3,114 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Class Pulse</title>
 <style>
-  body { font-family: sans-serif; text-align: center; padding-top: 30vh; }
-  button { font-size: 2rem; padding: 2rem 3rem; border-radius: 1rem; border: none; background: #e74c3c; color: white; }
+  body { font-family: sans-serif; text-align: center; padding: 12vh 1rem 0; }
+  input { font-size: 1.1rem; padding: .6rem; width: 80%; max-width: 320px;
+          border-radius: 8px; border: 1px solid #aaa; }
+  .join { font-size: 1.1rem; padding: .8rem 1.2rem; margin: .4rem;
+          border-radius: 10px; border: none; background: #2c3e50; color: white; }
+  #lost { font-size: 2rem; padding: 2rem 3rem; border-radius: 1rem; border: none;
+          background: #e74c3c; color: white; }
+  #lost:disabled { background: #999; }
+  #stage2 { display: none; }
+  small a { color: #555; }
 </style></head>
 <body>
-  <button onclick="tap()">😕 I'm lost</button>
-  <p id="msg"></p>
+  <div id="stage1">
+    <h2>Join the class</h2>
+    <p>Do you want your teacher to see your name?</p>
+    <input id="name" placeholder="Your name (optional)" maxlength="30"><br>
+    <button class="join" onclick="join(true)">Join with my name</button>
+    <button class="join" onclick="join(false)">Join anonymously</button>
+    <p id="err" style="color:#c0392b"></p>
+  </div>
+
+  <div id="stage2">
+    <h3 id="topic">Connecting…</h3>
+    <button id="lost" onclick="tap()" disabled>😕 I'm lost</button>
+    <p id="msg"></p>
+    <small><a href="#" onclick="change()">Change how I appear</a></small>
+  </div>
+
 <script>
-  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/student");
+  const $ = (id) => document.getElementById(id);
+
+  // ?test uses a per-tab ID so you can test many tabs in one browser
+  let store;
+  try {
+    store = location.search.includes("test") ? sessionStorage : localStorage;
+    store.getItem("x");
+  } catch (e) {
+    const mem = {};
+    store = { getItem: (k) => mem[k] || null,
+              setItem: (k, v) => { mem[k] = v; },
+              removeItem: (k) => { delete mem[k]; } };
+  }
+
+  let sid = store.getItem("pulse_id");
+  if (!sid) {
+    sid = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    store.setItem("pulse_id", sid);
+  }
+
+  let ws, name = "", show = "0";
+
+  function join(withName) {
+    const n = $("name").value.trim();
+    if (withName && !n) {
+      $("err").innerText = "Please type your name, or join anonymously.";
+      return;
+    }
+    name = withName ? n : "";
+    show = withName ? "1" : "0";
+    store.setItem("pulse_choice", JSON.stringify({name: name, show: show}));
+    start();
+  }
+
+  function start() {
+    $("stage1").style.display = "none";
+    $("stage2").style.display = "block";
+    connect();
+  }
+
+  function change() {
+    store.removeItem("pulse_choice");
+    location.reload();
+  }
+
+  function connect() {
+    ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://")
+        + location.host + "/ws/student?sid=" + encodeURIComponent(sid)
+        + "&show=" + show + "&name=" + encodeURIComponent(name));
+    ws.onmessage = (e) => {
+      const d = JSON.parse(e.data);
+      if (d.type !== "you") return;
+      $("topic").innerText = "Topic: " + d.topic;
+      $("lost").disabled = d.tapped;
+      $("msg").innerText = d.tapped
+        ? "Recorded ✔ Your answer is saved, even if you close this page."
+        : "";
+    };
+    ws.onclose = () => {
+      $("lost").disabled = true;
+      $("msg").innerText = "Reconnecting…";
+      setTimeout(connect, 2000);
+    };
+  }
+
   function tap() {
+    if (ws.readyState !== 1) return;
+    $("lost").disabled = true;
     ws.send(JSON.stringify({type: "confused"}));
-    document.getElementById("msg").innerText = "Sent anonymously ✔";
+  }
+
+  // returning student: join automatically with the saved choice
+  const saved = store.getItem("pulse_choice");
+  if (saved) {
+    try {
+      const c = JSON.parse(saved);
+      name = c.name;
+      show = c.show;
+      start();
+    } catch (e) {}
   }
 </script></body></html>
