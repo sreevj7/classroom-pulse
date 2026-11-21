@@ -3,131 +3,63 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Class Pulse</title>
 <style>
-  body { font-family: sans-serif; text-align: center; padding: 12vh 1rem 0; }
-  input { font-size: 1.1rem; padding: .6rem; width: 80%; max-width: 320px;
-          border-radius: 8px; border: 1px solid #aaa; }
-  .join { font-size: 1.1rem; padding: .8rem 1.2rem; margin: .4rem;
-          border-radius: 10px; border: none; background: #2c3e50; color: white; }
-  .add { font-size: 1rem; padding: .6rem 1rem; margin-top: 1rem;
-         border-radius: 10px; border: 2px solid #2c3e50; background: white;
-         color: #2c3e50; }
+  body { font-family: sans-serif; text-align: center; padding: 8vh 1rem 2rem; }
   #lost { font-size: 2rem; padding: 2rem 3rem; border-radius: 1rem; border: none;
           background: #e74c3c; color: white; }
-  #lost:disabled { background: #999; }
-  #stage2 { display: none; }
-  small a { color: #555; }
+  .opt { display: block; width: 100%; max-width: 340px; margin: .4rem auto;
+         padding: .9rem; font-size: 1.05rem; border-radius: 10px;
+         border: 2px solid #2c3e50; background: white; }
+  #why { display: none; margin-top: 1rem; }
+  #prompt { display: none; border: 2px solid #2c3e50; border-radius: 12px;
+            padding: .5rem 1rem 1rem; margin: 0 auto 1.5rem; max-width: 360px; }
+  .yes { background: #abebc6; }
+  .no { background: #f5b7b1; }
 </style></head>
 <body>
-  <div id="stage1">
-    <h2>Join the class</h2>
-    <p>Do you want your teacher to see your name?</p>
-    <input id="name" placeholder="Your name (optional)" maxlength="30"><br>
-    <button class="join" onclick="join(true)">Join with my name</button>
-    <button class="join" onclick="join(false)">Join anonymously</button>
-    <p id="err" style="color:#c0392b"></p>
+  <div id="prompt">
+    <h3>Your teacher explained again.<br>Clearer now?</h3>
+    <button class="opt yes" onclick="clearer('yes')">👍 Yes, clearer</button>
+    <button class="opt no" onclick="clearer('no')">😕 Still lost</button>
   </div>
 
-  <div id="stage2">
-    <h3 id="topic">Connecting…</h3>
-    <button id="lost" onclick="tap()" disabled>😕 I'm lost</button>
-    <p id="msg"></p>
-    <small><a href="#" onclick="change()">Change how I appear</a></small>
-    <div id="multi">
-      <button class="add" onclick="another()">➕ Add another student on this device</button>
-    </div>
+  <button id="lost" onclick="tap()">😕 I'm lost</button>
+  <p id="msg"></p>
+
+  <div id="why">
+    <p>Why? (optional)</p>
+    <button class="opt" onclick="reason('fast')">🏃 Too fast</button>
+    <button class="opt" onclick="reason('concept')">🤔 Don't get the concept</button>
+    <button class="opt" onclick="reason('example')">💡 Need an example</button>
+    <button class="opt" onclick="reason('access')">🔇 Can't see or hear</button>
   </div>
 
 <script>
-  // Set to false in a real classroom so one phone = one student
-  const ALLOW_MULTI = true;
-
   const $ = (id) => document.getElementById(id);
-  if (!ALLOW_MULTI) $("multi").style.display = "none";
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/student");
+  let promptId = 0;
 
-  // ?test uses a per-tab ID so you can test many tabs in one browser
-  let store;
-  try {
-    store = location.search.includes("test") ? sessionStorage : localStorage;
-    store.getItem("x");
-  } catch (e) {
-    const mem = {};
-    store = { getItem: (k) => mem[k] || null,
-              setItem: (k, v) => { mem[k] = v; },
-              removeItem: (k) => { delete mem[k]; } };
-  }
-
-  let sid = store.getItem("pulse_id");
-  if (!sid) {
-    sid = Math.random().toString(36).slice(2) + Date.now().toString(36);
-    store.setItem("pulse_id", sid);
-  }
-
-  let ws, name = "", show = "0";
-
-  function join(withName) {
-    const n = $("name").value.trim();
-    if (withName && !n) {
-      $("err").innerText = "Please type your name, or join anonymously.";
-      return;
+  ws.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    if (d.type === "prompt") {
+      promptId = d.id;
+      $("prompt").style.display = d.show ? "block" : "none";
     }
-    name = withName ? n : "";
-    show = withName ? "1" : "0";
-    store.setItem("pulse_choice", JSON.stringify({name: name, show: show}));
-    start();
-  }
-
-  function start() {
-    $("stage1").style.display = "none";
-    $("stage2").style.display = "block";
-    connect();
-  }
-
-  function change() {
-    store.removeItem("pulse_choice");
-    location.reload();
-  }
-
-  // new student on the same device: the old one stays recorded and counted
-  function another() {
-    store.removeItem("pulse_id");
-    store.removeItem("pulse_choice");
-    location.reload();
-  }
-
-  function connect() {
-    ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://")
-        + location.host + "/ws/student?sid=" + encodeURIComponent(sid)
-        + "&show=" + show + "&name=" + encodeURIComponent(name));
-    ws.onmessage = (e) => {
-      const d = JSON.parse(e.data);
-      if (d.type !== "you") return;
-      $("topic").innerText = "Topic: " + d.topic;
-      $("lost").disabled = d.tapped;
-      $("msg").innerText = d.tapped
-        ? "Recorded ✔ Please keep this page open until the lecture ends."
-        : "";
-    };
-    ws.onclose = () => {
-      $("lost").disabled = true;
-      $("msg").innerText = "Reconnecting…";
-      setTimeout(connect, 2000);
-    };
-  }
+  };
 
   function tap() {
-    if (ws.readyState !== 1) return;
-    $("lost").disabled = true;
     ws.send(JSON.stringify({type: "confused"}));
+    $("msg").innerText = "Sent anonymously ✔";
+    $("why").style.display = "block";
   }
 
-  // returning student: join automatically with the saved choice
-  const saved = store.getItem("pulse_choice");
-  if (saved) {
-    try {
-      const c = JSON.parse(saved);
-      name = c.name;
-      show = c.show;
-      start();
-    } catch (e) {}
+  function reason(r) {
+    ws.send(JSON.stringify({type: "reason", reason: r}));
+    $("why").style.display = "none";
+    $("msg").innerText = "Thanks, your teacher knows ✔";
+  }
+
+  function clearer(answer) {
+    ws.send(JSON.stringify({type: "clearer", id: promptId, answer: answer}));
+    $("prompt").style.display = "none";
   }
 </script></body></html>

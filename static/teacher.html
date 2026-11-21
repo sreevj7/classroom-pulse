@@ -9,8 +9,7 @@
   .big { font-size: 4rem; font-weight: bold; }
   #alert { display: none; background: #e74c3c; color: white; padding: 1rem;
            border-radius: 8px; font-size: 1.2rem; margin-bottom: 1rem; }
-  table { border-collapse: collapse; width: 100%; }
-  th, td { padding: .5rem; border-bottom: 1px solid #ddd; text-align: left; }
+  #rx { background: #f4f6f7; border-radius: 8px; padding: .7rem 1rem; margin: .7rem 0; }
   li { margin: 0.3rem 0; }
 </style></head>
 <body>
@@ -23,25 +22,25 @@
 
   <h2>Topic: <span id="topic"></span></h2>
   <div class="big"><span id="percent">0</span>% confused</div>
-  <p><b id="lost">0</b> of <b id="joined">0</b> students lost
-     &nbsp;|&nbsp; Online now: <b id="online">0</b></p>
+  <p><span id="confused">0</span> of <span id="students">0</span> students</p>
 
   <input id="newtopic" placeholder="Next topic">
   <button onclick="setTopic()">Switch topic</button>
-  <button onclick="resetAll()">New session</button>
   <a href="/summary" target="_blank">Open summary</a>
 
-  <h3>Confusion timeline (restarts at 0 for every topic)</h3>
+  <div style="margin-top:1rem">
+    <button onclick="reexplain()">🔁 I re-explained: ask the class</button>
+    <div id="rx">No re-explain check yet.</div>
+  </div>
+
+  <h3>Confusion timeline</h3>
   <canvas id="chart" height="120"></canvas>
+
+  <h3>Why they're lost (last minute)</h3>
+  <ul id="reasons"><li>No reasons yet</li></ul>
 
   <h3>Spike moments</h3>
   <ul id="spikelist"><li>None yet</li></ul>
-
-  <h3>Who signalled</h3>
-  <table>
-    <thead><tr><th>Time</th><th>Student</th><th>Topic</th></tr></thead>
-    <tbody id="log"></tbody>
-  </table>
 
 <script>
   const $ = (id) => document.getElementById(id);
@@ -49,8 +48,7 @@
     c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const clock = (t) => new Date(t * 1000).toLocaleTimeString();
 
-  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://")
-                           + location.host + "/ws/teacher");
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/teacher");
 
   function drawQR() {
     $("qr").innerHTML = "";
@@ -64,23 +62,41 @@
   const chart = new Chart($("chart"), {
     type: "line",
     data: { labels: [], datasets: [{
-      label: "Students lost (% of class)", data: [], borderColor: "#e74c3c",
+      label: "Confusion %", data: [], borderColor: "#e74c3c",
       tension: 0.3, pointRadius: 2,
       pointBackgroundColor: [], pointBorderColor: []
     }]},
     options: { animation: false, scales: { y: { min: 0, max: 100 } } }
   });
 
+  function renderRx(r) {
+    if (!r) { $("rx").innerHTML = "No re-explain check yet."; return; }
+    let html;
+    if (r.open) {
+      const waiting = r.targets - r.yes - r.no;
+      html = `<b>Asking ${r.targets} students who were lost…</b>
+              ${r.yes} clearer, ${r.no} still lost, ${waiting} waiting (${r.left}s left)`;
+    } else {
+      const pct = r.targets ? Math.round(100 * r.yes / r.targets) : 0;
+      html = `<b>Last re-explain (${esc(r.topic)}):</b>
+              ${r.yes} of ${r.targets} lost students say it's clearer (${pct}%)`;
+      if (r.recovery !== null) html += `, half were clear within ${r.recovery}s`;
+      html += `. Class confusion ${r.before}% → ${r.after}%.`;
+    }
+    $("rx").innerHTML = html;
+  }
+
   ws.onmessage = (e) => {
     const d = JSON.parse(e.data);
+    if (d.type === "notice") { alert(d.text); return; }
     if (d.type !== "state") return;
 
-    $("topic").innerText = d.topic;
     $("percent").innerText = d.percent;
-    $("lost").innerText = d.lost;
-    $("joined").innerText = d.joined;
-    $("online").innerText = d.online;
+    $("confused").innerText = d.confused;
+    $("students").innerText = d.students;
+    $("topic").innerText = d.topic;
 
+    // timeline, with spike points drawn big and dark red
     const spikeTimes = new Set(d.spikes.map(s => s.t));
     chart.data.labels = d.history.map(h => clock(h.t));
     chart.data.datasets[0].data = d.history.map(h => h.percent);
@@ -90,21 +106,27 @@
       d.history.map(h => spikeTimes.has(h.t) ? 8 : 2);
     chart.update("none");
 
+    // why they are lost
+    $("reasons").innerHTML = d.reasons.length
+      ? d.reasons.map(x => `<li>${x.label}: <b>${x.count}</b></li>`).join("")
+        + (d.suggestion ? `<li><b>Suggestion:</b> ${d.suggestion}</li>` : "")
+      : "<li>No reasons yet</li>";
+
+    renderRx(d.reexplain);
+
+    // spike list
     $("spikelist").innerHTML = d.spikes.length
       ? d.spikes.slice().reverse().map(s =>
-          `<li>${clock(s.t)}: ${s.count} students (${s.percent}% of class) got lost in 30s during "${esc(s.topic)}"</li>`
-        ).join("")
+          `<li>${clock(s.t)}: ${s.percent}% confused during "${esc(s.topic)}"</li>`).join("")
       : "<li>None yet</li>";
 
-    $("log").innerHTML = d.log.slice().reverse().map(l =>
-      `<tr><td>${clock(l.t)}</td><td>${esc(l.who)}</td><td>${esc(l.topic)}</td></tr>`
-    ).join("");
-
-    const last = d.spikes[d.spikes.length - 1];
+    // banner if a spike happened in the last 20 seconds
     const box = $("alert");
+    const last = d.spikes[d.spikes.length - 1];
     if (last && Date.now() / 1000 - last.t < 20) {
       box.style.display = "block";
-      box.innerText = "Confusion spike: " + last.count + " students just got lost on \"" + last.topic + "\"";
+      box.innerText = "Confusion spike: " + last.percent + "% of the class just got lost on \"" + last.topic + "\"."
+        + (d.suggestion ? " Suggestion: " + d.suggestion + "." : "");
     } else {
       box.style.display = "none";
     }
@@ -112,11 +134,8 @@
 
   function setTopic() {
     ws.send(JSON.stringify({type: "set_topic", topic: $("newtopic").value}));
-    $("newtopic").value = "";
   }
-  function resetAll() {
-    if (confirm("Start a new session? This clears all taps and topics.")) {
-      ws.send(JSON.stringify({type: "reset"}));
-    }
+  function reexplain() {
+    ws.send(JSON.stringify({type: "reexplain"}));
   }
 </script></body></html>

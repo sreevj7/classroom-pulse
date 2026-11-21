@@ -4,33 +4,58 @@
 <title>Class Summary</title>
 <style>
   body { font-family: sans-serif; padding: 1.5rem; max-width: 1000px; margin: auto; }
-  table { border-collapse: collapse; width: 100%; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
   th, td { padding: 0.7rem; border-bottom: 1px solid #ddd; text-align: left; }
-  .Revisit { color: #c0392b; font-weight: bold; }
-  .Quick { color: #e67e22; font-weight: bold; }
-  .Understood { color: #27ae60; font-weight: bold; }
+  .Revisit, .Did { color: #c0392b; font-weight: bold; }
+  .Quick, .Partly { color: #e67e22; font-weight: bold; }
+  .Understood, .Worked { color: #27ae60; font-weight: bold; }
+  .Still { color: #7f8c8d; font-weight: bold; }
 </style></head>
 <body>
   <h1>Post-class summary</h1>
   <p>Topics ranked by how much they need revisiting. <a href="/teacher">Back to dashboard</a></p>
   <table>
     <thead><tr>
-      <th>Topic</th><th>Students lost</th><th>Of class</th>
-      <th>Spikes</th><th>Who (shared names)</th><th>Advice</th>
+      <th>Topic</th><th>Avg confusion</th><th>Peak</th><th>Spikes</th>
+      <th>Taps</th><th>Main reasons</th><th>Advice</th>
     </tr></thead>
     <tbody id="rows"></tbody>
+  </table>
+
+  <h2>Re-explain results</h2>
+  <p>After re-explaining, the students who were lost were asked "Clearer now?"</p>
+  <table>
+    <thead><tr>
+      <th>Time</th><th>Topic</th><th>Clearer now</th><th>Still lost</th>
+      <th>Half clear in</th><th>Confusion start → end</th><th>Verdict</th>
+    </tr></thead>
+    <tbody id="rx"></tbody>
   </table>
 <script>
   const esc = (s) => String(s).replace(/[&<>"]/g,
     c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
   fetch("/api/summary").then(r => r.json()).then(data => {
     document.getElementById("rows").innerHTML = data.map(r => {
       const cls = r.advice.split(" ")[0];
-      let who = r.names.map(esc).join(", ");
-      if (r.anonymous) who += (who ? " + " : "") + r.anonymous + " anonymous";
-      return `<tr><td>${esc(r.topic)}</td><td>${r.lost} / ${r.joined}</td>
-              <td>${r.percent}%</td><td>${r.spikes}</td>
-              <td>${who || "-"}</td><td class="${cls}">${r.advice}</td></tr>`;
+      return `<tr><td>${esc(r.topic)}</td><td>${r.avg}%</td><td>${r.peak}%</td>
+              <td>${r.spikes}</td><td>${r.taps}</td><td>${esc(r.reasons)}</td>
+              <td class="${cls}">${r.advice}</td></tr>`;
     }).join("");
+  });
+
+  fetch("/api/reexplains").then(r => r.json()).then(data => {
+    document.getElementById("rx").innerHTML = data.length
+      ? data.map(r => {
+          const cls = r.verdict.split(" ")[0];
+          const rec = r.recovery === null ? "-" : r.recovery + " s";
+          const after = r.after === null ? "..." : r.after + "%";
+          return `<tr><td>${new Date(r.time * 1000).toLocaleTimeString()}</td>
+                  <td>${esc(r.topic)}</td><td>${r.yes} of ${r.targets}</td>
+                  <td>${r.no}</td><td>${rec}</td>
+                  <td>${r.before}% → ${after}</td>
+                  <td class="${cls}">${r.verdict}</td></tr>`;
+        }).join("")
+      : "<tr><td colspan='7'>No re-explain checks yet.</td></tr>";
   });
 </script></body></html>
