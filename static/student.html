@@ -8,6 +8,9 @@
           border-radius: 8px; border: 1px solid #aaa; }
   .join { font-size: 1.1rem; padding: .8rem 1.2rem; margin: .4rem;
           border-radius: 10px; border: none; background: #2c3e50; color: white; }
+  .add { font-size: 1rem; padding: .6rem 1rem; margin-top: 1rem;
+         border-radius: 10px; border: 2px solid #2c3e50; background: white;
+         color: #2c3e50; }
   #lost { font-size: 2rem; padding: 2rem 3rem; border-radius: 1rem; border: none;
           background: #e74c3c; color: white; }
   #lost:disabled { background: #999; }
@@ -29,10 +32,17 @@
     <button id="lost" onclick="tap()" disabled>😕 I'm lost</button>
     <p id="msg"></p>
     <small><a href="#" onclick="change()">Change how I appear</a></small>
+    <div id="multi">
+      <button class="add" onclick="another()">➕ Add another student on this device</button>
+    </div>
   </div>
 
 <script>
+  // Set to false in a real classroom so one phone = one student
+  const ALLOW_MULTI = true;
+
   const $ = (id) => document.getElementById(id);
+  if (!ALLOW_MULTI) $("multi").style.display = "none";
 
   // ?test uses a per-tab ID so you can test many tabs in one browser
   let store;
@@ -73,6 +83,13 @@
   }
 
   function change() {
+    store.removeItem("pulse_choice");
+    location.reload();
+  }
+
+  // new student on the same device: the old one stays recorded and counted
+  function another() {
+    store.removeItem("pulse_id");
     store.removeItem("pulse_choice");
     location.reload();
   }
