@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Class Summary</title>
+<style>
+  body { font-family: sans-serif; padding: 1.5rem; max-width: 900px; margin: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { padding: 0.7rem; border-bottom: 1px solid #ddd; text-align: left; }
+  .Revisit { color: #c0392b; font-weight: bold; }
+  .Quick { color: #e67e22; font-weight: bold; }
+  .Understood { color: #27ae60; font-weight: bold; }
+</style></head>
+<body>
+  <h1>Post-class summary</h1>
+  <p>Topics ranked by how much they need revisiting.</p>
+  <table>
+    <thead><tr>
+      <th>Topic</th><th>Avg confusion</th><th>Peak</th>
+      <th>Spikes</th><th>Taps</th><th>Advice</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+<script>
+  fetch("/api/summary").then(r => r.json()).then(data => {
+    document.getElementById("rows").innerHTML = data.map(r => {
+      const cls = r.advice.split(" ")[0];
+      return `<tr><td>${r.topic}</td><td>${r.avg}%</td><td>${r.peak}%</td>
+              <td>${r.spikes}</td><td>${r.taps}</td>
+              <td class="${cls}">${r.advice}</td></tr>`;
+    }).join("");
+  });
+</script></body></html>

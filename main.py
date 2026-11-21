@@ -25,6 +25,9 @@ class Session:
         self.history = []          # timeline points
         self.spikes = []           # detected spike moments
         self.last_spike_time = 0
+        self.spikes = []           # detected spike moments
+        self.last_spike_time = 0
+        self.tap_counts = {}       # NEW: total taps per topic
 
     def active_taps(self):
         cutoff = time.time() - DECAY_SECONDS
@@ -105,7 +108,40 @@ def home():
 def teacher_page():
     return FileResponse("static/teacher.html")
 
+@app.get("/summary")
+def summary_page():
+    return FileResponse("static/summary.html")
 
+
+@app.get("/api/summary")
+def summary_data():
+    topics = {}
+    for h in session.history:
+        t = topics.setdefault(h["topic"], {"topic": h["topic"], "samples": []})
+        t["samples"].append(h["percent"])
+
+    result = []
+    for name, t in topics.items():
+        samples = t["samples"]
+        avg = round(sum(samples) / len(samples), 1)
+        peak = max(samples)
+        spikes = sum(1 for s in session.spikes if s["topic"] == name)
+        taps = session.tap_counts.get(name, 0)
+        score = round(avg + 0.5 * peak + 10 * spikes, 1)
+        if score >= 60:
+            advice = "Revisit this topic"
+        elif score >= 25:
+            advice = "Quick recap needed"
+        else:
+            advice = "Understood well"
+        result.append({
+            "topic": name, "avg": avg, "peak": peak,
+            "spikes": spikes, "taps": taps,
+            "score": score, "advice": advice,
+        })
+
+    result.sort(key=lambda r: r["score"], reverse=True)
+    return result
 @app.websocket("/ws/student")
 async def student_ws(ws: WebSocket):
     await ws.accept()
@@ -119,9 +155,9 @@ async def student_ws(ws: WebSocket):
                 if now - session.last_tap.get(sid, 0) >= COOLDOWN:
                     session.last_tap[sid] = now
                     session.taps.append((now, sid, session.topic))
+                    session.tap_counts[session.topic] = session.tap_counts.get(session.topic, 0) + 1
     except WebSocketDisconnect:
         session.students.pop(sid, None)
-
 
 @app.websocket("/ws/teacher")
 async def teacher_ws(ws: WebSocket):
