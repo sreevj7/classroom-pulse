@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html><head><title>Teacher Dashboard</title>
+<style>body{font-family:sans-serif;padding:2rem} .big{font-size:4rem}</style></head>
+<body>
+  <h2>Topic: <span id="topic"></span></h2>
+  <div class="big"><span id="percent">0</span>% confused</div>
+  <p><span id="confused">0</span> of <span id="students">0</span> students</p>
+  <input id="newtopic" placeholder="Next topic">
+  <button onclick="setTopic()">Switch topic</button>
+<script>
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/teacher");
+  ws.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    if (d.type === "state") {
+      percent.innerText = d.percent; confused.innerText = d.confused;
+      students.innerText = d.students; topic.innerText = d.topic;
+    }
+  };
+  function setTopic() {
+    ws.send(JSON.stringify({type: "set_topic", topic: newtopic.value}));
+  }
+</script></body></html>

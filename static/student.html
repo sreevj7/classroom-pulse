@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Class Pulse</title>
+<style>
+  body { font-family: sans-serif; text-align: center; padding-top: 30vh; }
+  button { font-size: 2rem; padding: 2rem 3rem; border-radius: 1rem; border: none; background: #e74c3c; color: white; }
+</style></head>
+<body>
+  <button onclick="tap()">😕 I'm lost</button>
+  <p id="msg"></p>
+<script>
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/student");
+  function tap() {
+    ws.send(JSON.stringify({type: "confused"}));
+    document.getElementById("msg").innerText = "Sent anonymously ✔";
+  }
+</script></body></html>
